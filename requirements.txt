@@ -1,3 +1,10 @@
-open3d
+### RGBD2PC_o3d
+# open3d
+# opencv-python
+# scipy
+
+### RGBD2PC_plt
+numpy
+matplotlib
 opencv-python
 scipy
