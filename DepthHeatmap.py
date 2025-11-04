@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         ],
         help="OpenCV colormap to use for the heatmap.",
     )
+    parser.add_argument(
+        "--bright-far",
+        action="store_true",
+        help="Keep brighter colors for farther points (default keeps brighter colors for nearer points).",
+    )
     return parser.parse_args()
 
 
@@ -124,6 +129,9 @@ def main() -> None:
         max_distance=args.max_distance,
     )
 
+    if not args.bright_far:
+        normalized = 1.0 - normalized
+
     heatmap = apply_colormap(normalized, mask, COLORMAP_MAP[args.colormap])
 
     output_path = (
@@ -132,9 +140,11 @@ def main() -> None:
         else depth_path.with_name(f"{depth_path.stem}_heatmap.png")
     )
     cv2.imwrite(str(output_path), heatmap)
+    brightness_desc = "明亮 = 近（自動反轉）" if not args.bright_far else "明亮 = 遠（保留原始對應）"
     print(
         f"✅ 已輸出熱度圖：{output_path}\n"
-        f"   深度範圍：{min_val:.3f} m → {max_val:.3f} m（無效像素已設為黑色）"
+        f"   深度範圍：{min_val:.3f} m → {max_val:.3f} m（無效像素已設為黑色）\n"
+        f"   顏色：{brightness_desc}"
     )
     if converted:
         print("ℹ️ 偵測到輸入深度為毫米，已自動換算為公尺。")

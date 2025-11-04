@@ -20,6 +20,25 @@ def parse_args() -> argparse.Namespace:
         default=default_dataset,
         help=f"Path to the dataset directory (default: {default_dataset})",
     )
+    parser.add_argument(
+        "-m",
+        "--max-distance",
+        type=float,
+        default=None,
+        help="Maximum depth (meters) to keep in the point cloud; discard farther points.",
+    )
+    parser.add_argument(
+        "--target-points",
+        type=int,
+        default=None,
+        help="Optional number of points to sample from the near region for denser visualization.",
+    )
+    parser.add_argument(
+        "--focus-percentile",
+        type=float,
+        default=1.0,
+        help="Keep only the nearest X fraction of valid depths (0 < X ≤ 1).",
+    )
     return parser.parse_args()
 
 
@@ -75,22 +94,78 @@ def main() -> None:
 
     # === 4️⃣ 過濾無效深度 ===
     mask = (Z > 0) & np.isfinite(Z)
-    X, Y, Z = X[mask], Y[mask], Z[mask]
+    if args.max_distance is not None:
+        mask &= Z <= args.max_distance
+        print(
+            f"ℹ️ 已套用最大距離 {args.max_distance:.2f} m，保留 {mask.sum()} / {mask.size} 個有效像素。"
+        )
+
+    if not (0 < args.focus_percentile <= 1.0):
+        raise ValueError("--focus-percentile 必須介於 0 與 1 之間。")
+
+    # 按距離排序，確保先處理最近的點
+    valid_indices = np.flatnonzero(mask)
+    if valid_indices.size == 0:
+        raise ValueError("❌ 沒有符合條件的深度像素可用於生成點雲。")
+
+    depths_flat = Z.flatten()[valid_indices]
+    order = np.argsort(depths_flat)
+    sorted_indices = valid_indices[order]
+
+    focus_count = int(np.ceil(sorted_indices.size * args.focus_percentile))
+    if focus_count <= 0:
+        raise ValueError("❌ focus-percentile 太小，沒有點可保留。")
+    if focus_count < sorted_indices.size:
+        sorted_indices = sorted_indices[:focus_count]
+        print(
+            f"ℹ️ 依照 focus-percentile={args.focus_percentile:.2f} 保留最近的 {focus_count} / {valid_indices.size} 點。"
+        )
+
+    if args.target_points is not None and args.target_points < sorted_indices.size:
+        sampled_indices = sorted_indices[: args.target_points]
+        print(
+            f"ℹ️ 針對近距離採樣 {args.target_points} 點（原本 {sorted_indices.size} 點）。"
+        )
+    else:
+        sampled_indices = sorted_indices
+
+    X_flat = X.flatten()
+    Y_flat = Y.flatten()
+    Z_flat = Z.flatten()
+
+    X_sel = X_flat[sampled_indices]
+    Y_sel = Y_flat[sampled_indices]
+    Z_sel = Z_flat[sampled_indices]
+    depth_values = Z_sel
+    points = np.stack([X_sel, Z_sel, -Y_sel], axis=1)
+    print(
+        f"ℹ️ 最終點雲深度範圍：{depth_values.min():.3f} m → {depth_values.max():.3f} m，"
+        f"點數 {depth_values.size}。"
+    )
+    print("ℹ️ 座標系統：X 向右、Y 向前（深度）、Z 向上。")
 
     # === 5️⃣ 若 Unity → 右手座標，翻軸（如需）===
     # Y = -Y
     # Z = -Z
 
-    points = np.stack([X, Y, Z], axis=1)
-
     # === 6️⃣ 可視化（灰階點雲）===
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
-    depth_vis = (Z - Z.min()) / (Z.max() - Z.min() + 1e-8)
-    ax.scatter(X[::10], Y[::10], Z[::10], c=plt.cm.viridis(depth_vis[::10]), s=1)
+    depth_norm = (depth_values - depth_values.min()) / (
+        depth_values.max() - depth_values.min() + 1e-8
+    )
+    depth_vis = 1.0 - depth_norm  # 讓亮度代表距離較近
+    plot_slice = slice(None, None, 10)
+    ax.scatter(
+        points[plot_slice, 0],
+        points[plot_slice, 1],
+        points[plot_slice, 2],
+        c=plt.cm.viridis(depth_vis[plot_slice]),
+        s=1,
+    )
     ax.set_xlabel("X (m)")
-    ax.set_ylabel("Y (m)")
-    ax.set_zlabel("Z (m)")
+    ax.set_ylabel("Y (forward, m)")
+    ax.set_zlabel("Z (up, m)")
     ax.set_title("Depth → 3D Point Cloud (No RGB)")
     ax.set_box_aspect([1, 1, 1])
     plt.show()
