@@ -69,6 +69,25 @@ Useful flags:
 - `--colormap`: choose the OpenCV colormap (default `inferno`).
 - `--bright-far`: keep bright colors for far pixels (default keeps bright = near).
 
+### 6. `scripts/sam_segmentation.py`
+Generates a refined workspace segmentation mask using [Segment Anything (SAM)](https://github.com/facebookresearch/segment-anything). The resulting mask is stored inside the dataset folder as `segment_mask.png` (unless you override `--output`).
+
+```bash
+python scripts/sam_segmentation.py \
+  --dataset dataset/example_data_apple \
+  --sam-checkpoint /path/to/sam_vit_h_4b8939.pth \
+  --device auto
+```
+
+Key options:
+- `--mask`: optional alternate workspace mask. Defaults to `workspace_mask.png` inside the dataset.
+- `--sam-model-type`: SAM model type (default `auto`; the script infers `vit_h`, `vit_l`, or `vit_b` from the checkpoint name, but you can override it manually).
+- `--max-components`: limit how many workspace mask components are converted to SAM box prompts.
+- `--device`: choose `auto` (default) to prefer Apple `mps`, or override with `mps`, `cuda`, `cuda:0`, or `cpu`. The script prints the resolved device so you can confirm whether `mps` is in use.
+
+> **Note:** Install the extra dependencies with `pip install -r requirements.txt` after downloading a SAM checkpoint from the official repository.
+> Download the ViT-B SAM checkpoint from https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints and place it under `RGBD2PC/models/` (e.g., `RGBD2PC/models/sam_vit_b_01ec64.pth`).
+
 ## Notes
 - All scripts automatically detect whether depth is in millimeters or meters and convert to meters when necessary.
 - When running outside the project root, pass absolute paths or adjust `--dataset` relative to your current working directory.
