@@ -201,20 +201,20 @@
 
 
 import argparse
-import json
 from pathlib import Path
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io as sio
-import matplotlib.pyplot as plt
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert RGB-D data inside a dataset folder into a point cloud and export GraspGen input."
     )
-    default_dataset = Path(__file__).resolve().parent / "example_data_apple"
+    project_root = Path(__file__).resolve().parents[1]
+    default_dataset = project_root / "dataset" / "example_data_apple"
     parser.add_argument(
         "-d",
         "--dataset",
@@ -256,7 +256,16 @@ def resolve_image_path(directory: Path, stem: str) -> Path:
     )
 def main() -> None:
     args = parse_args()
-    dataset_dir = args.dataset
+    project_root = Path(__file__).resolve().parents[1]
+    dataset_dir = args.dataset.expanduser()
+    if not dataset_dir.is_absolute():
+        candidate = (Path.cwd() / dataset_dir).resolve()
+        if candidate.exists():
+            dataset_dir = candidate
+        else:
+            dataset_dir = (project_root / dataset_dir).resolve()
+    else:
+        dataset_dir = dataset_dir.resolve()
 
     color_path = resolve_image_path(dataset_dir, "color")
     depth_path = dataset_dir / "depth.png"
@@ -387,18 +396,6 @@ def main() -> None:
     ax.set_title("RGB-D → 3D Point Cloud")
     ax.set_box_aspect([1, 1, 1])
     plt.show()
-
-    # === 7️⃣ 輸出 GraspGen JSON ===
-    payload = {
-        "pc": points.tolist(),
-        "pc_color": colors_sampled.astype(np.uint8).tolist(),
-        "grasp_poses": [np.eye(4).tolist()],
-        "grasp_conf": [0.0],
-    }
-    with open("graspgen_input.json", "w") as f:
-        json.dump(payload, f)
-    print(f"✅ Saved {len(points)} points to graspgen_input.json")
-
 
 if __name__ == "__main__":
     main()

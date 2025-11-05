@@ -1,23 +1,33 @@
 import argparse
+import json
 from pathlib import Path
+from typing import Optional, Tuple
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
-import open3d as o3d
 import scipy.io as sio
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert RGB-D data inside a dataset folder into an Open3D point cloud."
+        description="Convert RGB-D data into a masked point cloud and export GraspGen input."
     )
-    default_dataset = Path(__file__).resolve().parent / "example_data_apple"
+    project_root = Path(__file__).resolve().parents[1]
+    default_dataset = project_root / "dataset" / "example_data_apple"
     parser.add_argument(
         "-d",
         "--dataset",
         type=Path,
         default=default_dataset,
         help=f"Path to the dataset directory (default: {default_dataset})",
+    )
+    parser.add_argument(
+        "--mask",
+        type=Path,
+        default=None,
+        help="Optional path to a workspace mask image. "
+        "Non-zero pixels are kept. Defaults to dataset/workspace_mask.png if present.",
     )
     parser.add_argument(
         "-m",
@@ -36,7 +46,7 @@ def parse_args() -> argparse.Namespace:
         "--target-points",
         type=int,
         default=None,
-        help="Optional number of points to sample from the near region before visualization/export.",
+        help="Optional number of points to sample from the near region for visualization/export.",
     )
     return parser.parse_args()
 
@@ -51,9 +61,48 @@ def resolve_image_path(directory: Path, stem: str) -> Path:
     raise FileNotFoundError(
         f"❌ 找不到必要檔案，請確認資料夾包含 {options}：{directory}"
     )
+
+
+def load_workspace_mask(
+    dataset_dir: Path, mask_override: Optional[Path]
+) -> Tuple[Optional[np.ndarray], Optional[Path]]:
+    mask_path = mask_override if mask_override is not None else dataset_dir / "workspace_mask.png"
+    if mask_path is None or not mask_path.exists():
+        return None, None
+
+    mask_image = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+    if mask_image is None:
+        raise ValueError(f"❌ 無法讀取 workspace mask：{mask_path}")
+    if mask_image.ndim == 3:
+        mask_image = cv2.cvtColor(mask_image, cv2.COLOR_BGR2GRAY)
+
+    mask_bool = mask_image > 0
+    mask_bool = np.flipud(mask_bool)  # mirror to stay aligned with flipped RGB
+    return mask_bool, mask_path
+
+
 def main() -> None:
     args = parse_args()
-    dataset_dir = args.dataset
+    project_root = Path(__file__).resolve().parents[1]
+
+    dataset_dir = args.dataset.expanduser()
+    if not dataset_dir.is_absolute():
+        candidate = (Path.cwd() / dataset_dir).resolve()
+        if candidate.exists():
+            dataset_dir = candidate
+        else:
+            dataset_dir = (project_root / dataset_dir).resolve()
+    else:
+        dataset_dir = dataset_dir.resolve()
+
+    if not dataset_dir.exists():
+        raise FileNotFoundError(f"❌ 找不到 dataset：{dataset_dir}")
+
+    mask_override = args.mask
+    if mask_override is not None:
+        mask_override = mask_override.expanduser()
+        if not mask_override.is_absolute():
+            mask_override = dataset_dir / mask_override
 
     color_path = resolve_image_path(dataset_dir, "color")
     depth_path = dataset_dir / "depth.png"
@@ -70,10 +119,11 @@ def main() -> None:
             f"❌ 找不到 dataset 檔案，請確認資料夾包含 {joined}：{dataset_dir}"
         )
 
-    # === 1. 讀取資料 ===
     color = cv2.cvtColor(cv2.imread(str(color_path)), cv2.COLOR_BGR2RGB)
-    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
+    color = np.flipud(color)
+    print("ℹ️ 已對 RGB 圖像進行 Y 軸鏡像（垂直翻轉）。")
 
+    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
     print(depth.min(), depth.max())
     if depth.max() > 10:
         depth /= 1000.0
@@ -81,21 +131,21 @@ def main() -> None:
     else:
         print("ℹ️ 偵測到深度單位為公尺。")
 
-    # === 2. 讀取相機內參 ===
+    mask_from_file, mask_path = load_workspace_mask(dataset_dir, mask_override)
+    if mask_from_file is None:
+        print("ℹ️ 找不到 workspace mask，將使用全部有效深度像素。")
+    else:
+        print(f"ℹ️ 已讀取 workspace mask：{mask_path}（已套用垂直鏡像）")
+
     meta = sio.loadmat(str(meta_path))
     fx = float(meta["fx"].squeeze())
     fy = float(meta["fy"].squeeze())
     cx = float(meta["cx"].squeeze())
     cy = float(meta["cy"].squeeze())
+
     H, W = depth.shape
-
-    if not (0 < args.focus_percentile <= 1.0):
-        raise ValueError("--focus-percentile 必須介於 0 與 1 之間。")
-
-    # === 3. 建立像素座標 ===
     u, v = np.meshgrid(np.arange(W), np.arange(H))
 
-    # === 4. 反投影 ===
     Z = depth
     X = (u - cx) * Z / fx
     Y = (v - cy) * Z / fy
@@ -106,6 +156,18 @@ def main() -> None:
         print(
             f"ℹ️ 已套用最大距離 {args.max_distance:.2f} m，保留 {mask.sum()} / {mask.size} 個有效像素。"
         )
+    if mask_from_file is not None:
+        if mask_from_file.shape != depth.shape:
+            raise ValueError(
+                f"❌ workspace mask 尺寸不符：{mask_from_file.shape} vs depth {depth.shape}"
+            )
+        before = mask.sum()
+        mask &= mask_from_file
+        after = mask.sum()
+        print(f"ℹ️ workspace mask 篩選：{after} / {before} 像素保留。")
+
+    if not (0 < args.focus_percentile <= 1.0):
+        raise ValueError("--focus-percentile 必須介於 0 與 1 之間。")
 
     valid_indices = np.flatnonzero(mask)
     if valid_indices.size == 0:
@@ -147,36 +209,59 @@ def main() -> None:
         depth_sampled.max() - depth_sampled.min() + 1e-8
     )
     depth_brightness = 0.3 + 0.7 * (1.0 - depth_norm)
+    colors_for_plot = np.clip(
+        (colors_sampled.astype(np.float32) / 255.0) * depth_brightness[:, None],
+        0.0,
+        1.0,
+    )
     print(
         f"ℹ️ 最終點雲深度範圍：{depth_sampled.min():.3f} m → {depth_sampled.max():.3f} m，"
         f"點數 {depth_sampled.size}。"
     )
     points = np.stack([X_sel, -Z_sel, Y_sel], axis=1)
     print("ℹ️ 座標系統：X 向右、Y 向後（深度鏡像）、Z 向下（鏡像）。")
-    print("ℹ️ 視覺化顏色 = 原始 RGB × 深度亮度（亮 = 近）。")
+    print("ℹ️ 圖形顏色 = 原始 RGB × 深度亮度（亮 = 近）。")
 
-    # === 5. 轉成 Open3D 點雲 ===
-    pcd_viz = o3d.geometry.PointCloud()
-    pcd_viz.points = o3d.utility.Vector3dVector(points.astype(np.float64))
-    blended = np.clip(
-        (colors_sampled.astype(np.float32) / 255.0) * depth_brightness[:, None],
-        0.0,
-        1.0,
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    plot_slice = slice(None, None, 10)
+    ax.scatter(
+        points[plot_slice, 0],
+        points[plot_slice, 1],
+        points[plot_slice, 2],
+        c=colors_for_plot[plot_slice],
+        s=1,
     )
-    pcd_viz.colors = o3d.utility.Vector3dVector(blended.astype(np.float64))
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y (mirrored)")
+    ax.set_zlabel("Z (mirrored)")
+    ax.set_title("RGB-D → 3D Point Cloud (Masked)")
+    ax.set_box_aspect([1, 1, 1])
+    plt.show()
 
-    pcd_export = o3d.geometry.PointCloud()
-    pcd_export.points = o3d.utility.Vector3dVector(points.astype(np.float64))
-    pcd_export.colors = o3d.utility.Vector3dVector(
-        (colors_sampled.astype(np.float32) / 255.0).astype(np.float64)
-    )
+    default_pose = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
+    ]
+    payload = {
+        "pc": points.tolist(),
+        "pc_color": colors_sampled.astype(np.uint8).tolist(),
+        "grasp_poses": [default_pose],
+        "grasp_conf": [0.0],
+    }
 
-    # === 7. 可視化 ===
-    o3d.visualization.draw_geometries([pcd_viz])
+    result_dir = project_root / "result_json"
+    result_dir.mkdir(parents=True, exist_ok=True)
 
-    # === 8. 輸出點雲檔（可用 MeshLab / CloudCompare 開） ===
-    o3d.io.write_point_cloud("output.ply", pcd_export)
-    print("✅ 已輸出 output.ply")
+    dataset_name = dataset_dir.name
+    object_name = dataset_name.split("_")[-1] if "_" in dataset_name else dataset_name
+    output_path = result_dir / f"{object_name}_graspgen.json"
+
+    with open(output_path, "w") as f:
+        json.dump(payload, f)
+    print(f"✅ Saved {len(points)} points to {output_path}")
 
 
 if __name__ == "__main__":
