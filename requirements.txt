@@ -13,3 +13,6 @@ scipy
 torch
 torchvision
 segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
+
+### YOLO workspace mask
+ultralytics

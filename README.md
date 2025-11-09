@@ -88,6 +88,27 @@ Key options:
 > **Note:** Install the extra dependencies with `pip install -r requirements.txt` after downloading a SAM checkpoint from the official repository.
 > Download the ViT-B SAM checkpoint from https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints and place it under `RGBD2PC/models/` (e.g., `RGBD2PC/models/sam_vit_b_01ec64.pth`).
 
+### 7. `scripts/generate_workspace_mask.py`
+Creates `workspace_mask.png` automatically for every dataset folder by running a YOLO model on the folder's `color.*` image.
+
+> **Important:** Provide your own trained YOLO weights (the repository does not ship with a pretrained model). The default path `models/yolo_model/best.pt` is only a placeholder.
+
+```bash
+python scripts/generate_workspace_mask.py \
+  --dataset-root dataset \
+  --model models/yolo_model/best.pt
+```
+
+Key options:
+- `--dataset-root`: dataset directory or a single dataset folder (default `dataset`).
+- `--model`: YOLO weights (`.pt`) to load (default `models/yolo_model/best.pt`).
+- `--device`: PyTorch device such as `cpu`, `mps`, or `cuda:0`.
+- `--conf`: confidence threshold (default 0.25).
+- `--classes`: optional list of class IDs to keep.
+- `--overwrite`: regenerate masks even if they already exist.
+
+This script depends on `ultralytics` (see `requirements.txt`).
+
 ## Notes
 - All scripts automatically detect whether depth is in millimeters or meters and convert to meters when necessary.
 - When running outside the project root, pass absolute paths or adjust `--dataset` relative to your current working directory.
