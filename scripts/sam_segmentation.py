@@ -9,6 +9,8 @@ from typing import Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 
+REPO_ROOT = Path(__file__).resolve().parent.parent  # Project root for relative model paths
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -153,6 +155,19 @@ _SAM_MODEL_HINTS: dict[str, Tuple[str, ...]] = {
 }
 
 
+def resolve_checkpoint_path(checkpoint: Path, repo_root: Path = REPO_ROOT) -> Path:
+    """Return an absolute checkpoint path, preferring repo-relative paths when possible."""
+    checkpoint = checkpoint.expanduser()
+    if checkpoint.is_absolute():
+        return checkpoint
+
+    repo_candidate = (repo_root / checkpoint).resolve()
+    if repo_candidate.exists():
+        return repo_candidate
+
+    return checkpoint.resolve()
+
+
 def infer_model_type(checkpoint_path: Path, requested: Optional[str]) -> str:
     if requested and requested.lower() != "auto":
         return requested.lower()
@@ -222,6 +237,7 @@ def main() -> None:
     args = parse_args()
     dataset_dir = args.dataset.resolve()
     output_path = args.output or dataset_dir / "segment_mask.png"
+    sam_checkpoint = resolve_checkpoint_path(args.sam_checkpoint)
 
     try:
         color_image_path = find_color_image(dataset_dir)
@@ -239,10 +255,10 @@ def main() -> None:
             )
 
         device = resolve_device(args.device)
-        model_type = infer_model_type(args.sam_checkpoint, args.sam_model_type)
+        model_type = infer_model_type(sam_checkpoint, args.sam_model_type)
         print(f"Using SAM device: {device}")
         print(f"Using SAM model type: {model_type}")
-        predictor = build_sam_predictor(model_type, args.sam_checkpoint, device)
+        predictor = build_sam_predictor(model_type, sam_checkpoint, device)
         color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
         sam_mask = apply_sam_boxes(predictor, color_rgb, boxes)
 

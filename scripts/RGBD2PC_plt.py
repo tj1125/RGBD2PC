@@ -201,12 +201,41 @@
 
 
 import argparse
+import math
 from pathlib import Path
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io as sio
+
+
+def _extract_scalar(meta_dict: dict, key: str):
+    value = meta_dict.get(key)
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        return float(value.squeeze())
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _estimate_fake_scale(meta_dict: dict):
+    fov = _extract_scalar(meta_dict, "verticalFov")
+    fov_key = "verticalFov"
+    if fov is None:
+        fov = _extract_scalar(meta_dict, "horizontalFov")
+        fov_key = "horizontalFov"
+    if fov is None or fov <= 0:
+        raise ValueError("meta.mat 缺少可用的 FOV 欄位。")
+    exponent = 0.274653 * fov - 3.951243
+    scale = math.exp(exponent) * 0.5
+    scale = float(np.clip(scale, 0.01, 1.0))
+    return scale, fov, fov_key
 
 
 def parse_args() -> argparse.Namespace:
@@ -240,6 +269,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional number of points to sample from the near region for visualization/export.",
+    )
+    parser.add_argument(
+        "--fake",
+        action="store_true",
+        help="針對生成深度圖啟用 FOV 對應的 Y 軸縮放（預設關閉）。",
     )
     return parser.parse_args()
 
@@ -285,10 +319,6 @@ def main() -> None:
     # === 1️⃣ 讀取 RGB、Depth、內參 ===
     color = cv2.cvtColor(cv2.imread(str(color_path)), cv2.COLOR_BGR2RGB)
     
-    # 🔄 對 RGB 圖像進行 Y 軸鏡像（垂直翻轉）
-    color = np.flipud(color)
-    print("ℹ️ 已對 RGB 圖像進行 Y 軸鏡像（垂直翻轉）。")
-    
     depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
     print(depth.min(), depth.max())
     if depth.max() > 10:
@@ -302,6 +332,17 @@ def main() -> None:
     fy = float(meta["fy"].squeeze())
     cx = float(meta["cx"].squeeze())
     cy = float(meta["cy"].squeeze())
+
+    depth_scale = 1.0
+    if args.fake:
+        try:
+            depth_scale, used_fov, fov_key = _estimate_fake_scale(meta)
+            print(
+                f"ℹ️ fake 模式：使用 {fov_key}={used_fov:.3f}°，"
+                f"Y 軸縮放 {depth_scale:.3f}"
+            )
+        except ValueError as exc:
+            print(f"⚠️ fake 模式無法套用：{exc}")
 
     # === 2️⃣ 建立像素座標 ===
     H, W = depth.shape
@@ -371,7 +412,9 @@ def main() -> None:
         f"ℹ️ 最終點雲深度範圍：{depth_sampled.min():.3f} m → {depth_sampled.max():.3f} m，"
         f"點數 {depth_sampled.size}。"
     )
-    points = np.stack([X_sel, -Z_sel, Y_sel], axis=1)
+    points = np.stack([X_sel, -depth_scale * Z_sel, Y_sel], axis=1)
+    if args.fake:
+        print(f"ℹ️ Y 軸已套用 FOV 縮放：{depth_scale:.3f}")
     print("ℹ️ 座標系統：X 向右、Y 向後（深度鏡像）、Z 向下（鏡像）。")
     print("ℹ️ 圖形顏色 = 原始 RGB × 深度亮度（亮 = 近）。")
 

@@ -1,118 +1,79 @@
 # RGBD2PC
 
-This repository contains utility scripts for transforming RGB-D or depth data into point clouds, heatmaps, or Open3D visualizations. Sample datasets are stored under `dataset/`.
+RGBD2PC is a toolbox for turning RGB‑D captures into point clouds, heatmaps, workspace masks and scene-level JSON packages. The scripts are purposely lightweight so you can mix and match them in data-prep pipelines or debugging sessions.
 
-## Requirements
-- Python 3.9+
-- Dependencies listed in `requirements.txt`
-
-Install dependencies:
+## Quick Start
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Repository Structure
-- `scripts/`: Command-line tools. Run them from the project root (recommended) or from inside `scripts/`.
-- `dataset/`: Sample object folders (`color.*`, `depth.*`, `meta.mat`, optional `workspace_mask.png`, etc.).
-- `result_json/`: Point-cloud JSON files produced by `RGBD2PC_plt_masked.py`, named `[object]_graspgen.json`.
-- `references/`: Placeholder for reference artifacts (currently empty).
-
-## Tools
-
-### 1. `scripts/RGBD2PC_plt_masked.py`
-Creates a masked point cloud with Matplotlib and exports a GraspGen-style JSON file. *This is the only script that writes JSON.*
-
-```bash
 python scripts/RGBD2PC_plt_masked.py -d dataset/example_data_apple
 ```
 
-Key options:
-- `-d / --dataset`: dataset directory (default `dataset/example_data_apple`).
-- `--mask`: workspace mask path (relative to the dataset or absolute). Defaults to `workspace_mask.png` inside the dataset if present.
-- `-m / --max-distance`: clamp far depths.
-- `--focus-percentile`: keep only the nearest fraction (0–1).
-- `--target-points`: downsample to a fixed number of points.
+Each dataset folder should contain:
 
-The output JSON is written to `result_json/[object]_graspgen.json`, where the object name is derived from the dataset folder (e.g., `example_data_apple` → `apple_graspgen.json`).
-
-### 2. `scripts/RGBD2PC_plt.py`
-Visualizes an RGB-D point cloud with Matplotlib, without applying a workspace mask and without writing JSON.
-
-```bash
-python scripts/RGBD2PC_plt.py -d dataset/example_data_water
+```
+dataset/<name>/
+  color.png (or .jpg)
+  depth.png
+  meta.mat         # intrinsics
+  workspace_mask.png (optional)
+  segment_mask.png (optional)
 ```
 
-### 3. `scripts/RGBD2PC_o3d.py`
-Generates an Open3D point cloud and saves `output.ply` for external tools (MeshLab, CloudCompare, etc.).
+## Key Scripts
+
+| Script | Purpose | Highlights |
+| --- | --- | --- |
+| `RGBD2PC_plt_masked.py` | Produces a masked point cloud, Matplotlib preview, and `[object]_graspgen.json`. | Workspace mask support, focus-based filtering, target-point sampling. |
+| `RGBD2PC_plt.py` | Visualizes raw RGB‑D clouds (no mask, no JSON). | Great for quick sanity checks. |
+| `RGBD2PC_o3d.py` | Builds an Open3D cloud and saves `output.ply`. | Good for MeshLab/CloudCompare. |
+| `Depth2PC.py` | Converts depth-only captures to grayscale point clouds. | Minimal dependencies. |
+| `DepthHeatmap.py` | Turns depth maps into colored heatmaps. | Adjustable min/max distance and colormap. |
+| `sam_segmentation.py` | Runs Meta’s Segment Anything to generate `segment_mask.png`. | Auto device resolution, SAM checkpoint inference. |
+| `generate_workspace_mask.py` | Uses YOLO (Ultralytics) to create `workspace_mask.png` for all datasets. | Bring your own weights. |
+| `export_scene_json.py` | Packages an entire scene (object cloud, full cloud, depth/color images, masks, grasp poses) into `result_scene_json/<timestamp>_<rand>.json`. | Optional `--fake` mode flattens background depths and rescales the depth axis based on FOV. |
+
+## `export_scene_json.py` in Detail
 
 ```bash
-python scripts/RGBD2PC_o3d.py -d dataset/example_data_cup
+python scripts/export_scene_json.py \
+  --dataset dataset/Room_1_1 \
+  --fake         # optional; enables synthetic depth tweaks
 ```
 
-### 4. `scripts/Depth2PC.py`
-Builds a point cloud from depth-only data and renders a grayscale Matplotlib chart (no RGB, no JSON output).
+What you get:
 
-```bash
-python scripts/Depth2PC.py -d dataset/example_data_wine
-```
+- `object_info.pc` / `pc_color`: mask-filtered points plus RGB.
+- `scene_info.full_pc`: up to 30k points, each stored as `[x, y, z, r, g, b, mask]`.
+- `scene_info.img_color`, `scene_info.img_depth`, `scene_info.obj_mask`.
+- `grasp_info.grasp_poses` + `grasp_conf`: default gripper pose + confidence placeholders.
 
-### 5. `scripts/DepthHeatmap.py`
-Converts a depth image into a heatmap. By default, the output filename appends `_heatmap` to the input stem.
+`--fake` mode:
 
-```bash
-python scripts/DepthHeatmap.py dataset/example_data_banana/depth.png
-```
+- Scales the depth axis using dataset FOV metadata.
+- Fills mask-out pixels with a fitted plane so the background lies on a single surface.
+- Copies the plane depths into both floating-point depth and raw image buffers.
 
-Useful flags:
-- `--min-distance` / `--max-distance`: control the depth range mapped to colors (in meters).
-- `--colormap`: choose the OpenCV colormap (default `inferno`).
-- `--bright-far`: keep bright colors for far pixels (default keeps bright = near).
+## Typical Workflow
 
-### 6. `scripts/sam_segmentation.py`
-Generates a refined workspace segmentation mask using [Segment Anything (SAM)](https://github.com/facebookresearch/segment-anything). The resulting mask is stored inside the dataset folder as `segment_mask.png` (unless you override `--output`).
+1. **Collect / copy data** into `dataset/<name>`.
+2. **(Optional) Generate masks**  
+   `python scripts/generate_workspace_mask.py -d dataset --model models/yolo/best.pt`
+3. **Inspect with Matplotlib**  
+   `python scripts/RGBD2PC_plt.py -d dataset/<name>`
+4. **Export masked cloud**  
+   `python scripts/RGBD2PC_plt_masked.py -d dataset/<name> --mask segment_mask.png`
+5. **Package the whole scene**  
+   `python scripts/export_scene_json.py -d dataset/<name> --fake`
 
-```bash
-python scripts/sam_segmentation.py \
-  --dataset dataset/example_data_apple \
-  --sam-checkpoint /path/to/sam_vit_h_4b8939.pth \
-  --device auto
-```
+## Notes & Tips
 
-Key options:
-- `--mask`: optional alternate workspace mask. Defaults to `workspace_mask.png` inside the dataset.
-- `--sam-model-type`: SAM model type (default `auto`; the script infers `vit_h`, `vit_l`, or `vit_b` from the checkpoint name, but you can override it manually).
-- `--max-components`: limit how many workspace mask components are converted to SAM box prompts.
-- `--device`: choose `auto` (default) to prefer Apple `mps`, or override with `mps`, `cuda`, `cuda:0`, or `cpu`. The script prints the resolved device so you can confirm whether `mps` is in use.
+- All scripts detect millimeters vs meters automatically. Depth images >10k are assumed to be mm and will be divided by 1000.
+- Run scripts from the repo root to keep relative paths simple.
+- `RGBD2PC_plt_masked.py`, `RGBD2PC_plt.py`, `RGBD2PC_o3d.py`, and `export_scene_json.py` accept `--fake` to rescale the depth axis using FOV metadata.
+- SAM- and YOLO-based scripts require extra dependencies (see `requirements.txt` comments).
 
-> **Note:** Install the extra dependencies with `pip install -r requirements.txt` after downloading a SAM checkpoint from the official repository.
-> Download the ViT-B SAM checkpoint from https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints and place it under `RGBD2PC/models/` (e.g., `RGBD2PC/models/sam_vit_b_01ec64.pth`).
+## License / Credits
 
-### 7. `scripts/generate_workspace_mask.py`
-Creates `workspace_mask.png` automatically for every dataset folder by running a YOLO model on the folder's `color.*` image.
-
-> **Important:** Provide your own trained YOLO weights (the repository does not ship with a pretrained model). The default path `models/yolo_model/best.pt` is only a placeholder.
-
-```bash
-python scripts/generate_workspace_mask.py \
-  --dataset-root dataset \
-  --model models/yolo_model/best.pt
-```
-
-Key options:
-- `--dataset-root`: dataset directory or a single dataset folder (default `dataset`).
-- `--model`: YOLO weights (`.pt`) to load (default `models/yolo_model/best.pt`).
-- `--device`: PyTorch device such as `cpu`, `mps`, or `cuda:0`.
-- `--conf`: confidence threshold (default 0.25).
-- `--classes`: optional list of class IDs to keep.
-- `--overwrite`: regenerate masks even if they already exist.
-
-This script depends on `ultralytics` (see `requirements.txt`).
-
-## Notes
-- All scripts automatically detect whether depth is in millimeters or meters and convert to meters when necessary.
-- When running outside the project root, pass absolute paths or adjust `--dataset` relative to your current working directory.
-- Only `RGBD2PC_plt_masked.py` writes JSON; use the other scripts for visualization-only workflows.
-
-## Sample Data
-The `dataset/` directory ships with several ready-to-use examples. To experiment with your own recordings, keep filenames aligned with the expected convention (`color.*`, `depth.*`, `meta.mat`, optional `workspace_mask.png`) so the scripts can locate inputs correctly.
+Use at your own risk. File an issue or PR if you extend the pipeline—pull requests that improve dataset tooling or camera-model handling are welcome. Happy point-clouding!
